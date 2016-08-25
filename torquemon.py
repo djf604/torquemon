@@ -21,16 +21,26 @@ the form of a qsub file. Should anything happen to interrupt a run, this restart
 can be provided directly to a new Torquemon run to pick up exactly where the last run
 left off. Note that only jobs which completed fully will be left out of the restart
 file; jobs which were in the middle of running will be re-run.
+
+At any point during a run, the user can input from stdin operations into the program,
+which will change some aspect about the run:
+    - j<int> will change the number of available job slots to <int>
+      ex: 'j45' will change the maximum number of jobs running to 45
+    - i<int> will change the check interval to <int>
+      ex: 'i45' will change the wait interval to every 45 seconds
 """
 
 import sys
 import argparse
 import subprocess
 import time
+import select
 from datetime import datetime
+from multiprocessing import Queue
+from multiprocessing.pool import ThreadPool
 
 __author__ = 'Dominic Fitzgerald'
-__version__ = '1.0'
+__version__ = '1.1'
 __email__ = 'dominicfitzgerald11@gmail.com'
 
 QSUB_JOB_UNSUBMITTED = 0
@@ -39,6 +49,9 @@ QSUB_JOB_COMPLETE = 2
 QSUB_JOB_ERROR = 3
 
 QSTAT_ID_NOT_IN_QUEUE = 153
+
+CHANGE_JOBS = 'j'
+CHANGE_INTERVAL = 'i'
 
 
 class QsubJob:
@@ -124,28 +137,57 @@ def mark_completed_jobs(qsub_jobs):
             running_job.state = QSUB_JOB_COMPLETE
 
 
-def main():
-    # Get arguments from the user
-    parser = argparse.ArgumentParser(prog='Torquemon',
-                                     description=('Submits and monitors jobs to the torque job queue ' +
-                                                  'system. Provides for batch jobs to be restarted ' +
-                                                  'if interrupted mid-run.'))
-    parser.add_argument('-q', '--qsub-file', required=True,
-                        help=('File containing qusb commands that will be executed in their entirety when ' +
-                              'there are available job slots. Optionally, a qsub command can be followed by ' +
-                              'a tab character and a folder path where torque log output will be deposited. ' +
-                              'If a run is interrupted before all jobs are completed, the residual restart ' +
-                              'file can be fed directly into torquemon as a qsub file.'))
-    parser.add_argument('-j', '--jobs', type=int, default=10,
-                        help='Number of jobs to allow to run simultaneously.')
-    parser.add_argument('-i', '--interval', type=int, default=60,
-                        help='Interval in seconds to check for completed jobs.')
-    parser.add_argument('-n', '--run-name',
-                        default=datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
-                        help='Name of the run, template used for the restart qsub file.')
-    parser.add_argument('--version', action='version', version='%(prog)s 1.0')
-    user_args = vars(parser.parse_args())
+def poll_for_input():
+    """
+    This function was modified from this StackOverflow question:
+    http://stackoverflow.com/questions/13207678/
+    """
+    dr, dw, de = select.select([sys.stdin], [], [], 0)
+    if not dr == []:
+        return sys.stdin.readline()
+    return None
 
+
+def listen_for_input(char_q, kill_q):
+    """
+    Runs in a separate thread to listen to user interrupts.
+    :param char_q: Queue Size-1 queue containing the user interrupt
+    :param kill_q: Queue Size-1 queue indicating thread should terminate
+    """
+    while True:
+        if kill_q.full():
+            return
+        c = poll_for_input()
+        if c is not None and char_q.empty():
+            char_q.put(c)
+
+
+def execute_interrupt(interrupt, user_args):
+    """
+    Given an interrupt, executes the operation. May mutate the user_args dictionary!
+    :param interrupt: str User input gathered from stdin
+    :param user_args: dict Command line arguments used to control main loop
+    """
+    op_code, op_val = interrupt[0], interrupt[1:].strip()
+
+    if op_code == CHANGE_JOBS:
+        try:
+            user_args['jobs'] = int(op_val)
+            sys.stderr.write('Changed number of jobs running to {}\n'.format(user_args['jobs']))
+        except ValueError:
+            sys.stderr.write('Invalid integer value\n')
+    elif op_code == CHANGE_INTERVAL:
+        try:
+            user_args['interval'] = int(op_val)
+            sys.stderr.write('Changed check interval to {}\n'.format(user_args['interval']))
+        except ValueError:
+            sys.stderr.write('Invalid integer value\n')
+    else:
+        sys.stderr.write('Invalid operation\n')
+
+
+def main(user_args, char_q):
+    # Set restart file filename
     restart_filename = user_args['run_name'] + '.restart.tqm'
 
     # Read in qsub file, inflate QsubJobs into a list
@@ -182,7 +224,11 @@ def main():
             ))
 
             # Wait a specified amount of time
-            time.sleep(user_args['interval'])
+            wait_until = time.time() + user_args['interval']
+            while time.time() < wait_until:
+                # Check for interrupts
+                if char_q.full():
+                    execute_interrupt(char_q.get(), user_args)
 
             # After waiting, check for complete jobs and write out the restart file
             mark_completed_jobs(qsub_jobs)
@@ -228,7 +274,11 @@ def main():
         ))
 
         # Wait a specified amount of time
-        time.sleep(user_args['interval'])
+        wait_until = time.time() + user_args['interval']
+        while time.time() < wait_until:
+            # Check for interrupts
+            if char_q.full():
+                execute_interrupt(char_q.get(), user_args)
 
         # After waiting, check for complete jobs and write out the restart file
         mark_completed_jobs(qsub_jobs)
@@ -245,4 +295,39 @@ def main():
     ))
 
 if __name__ == '__main__':
-    main()
+    # Get arguments from the user
+    parser = argparse.ArgumentParser(prog='Torquemon',
+                                     description=('Submits and monitors jobs to the torque job queue ' +
+                                                  'system. Provides for batch jobs to be restarted ' +
+                                                  'if interrupted mid-run.'))
+    parser.add_argument('-q', '--qsub-file', required=True,
+                        help=('File containing qusb commands that will be executed in their entirety when ' +
+                              'there are available job slots. Optionally, a qsub command can be followed by ' +
+                              'a tab character and a folder path where torque log output will be deposited. ' +
+                              'If a run is interrupted before all jobs are completed, the residual restart ' +
+                              'file can be fed directly into torquemon as a qsub file.'))
+    parser.add_argument('-j', '--jobs', type=int, default=10,
+                        help='Number of jobs to allow to run simultaneously.')
+    parser.add_argument('-i', '--interval', type=int, default=60,
+                        help='Interval in seconds to check for completed jobs.')
+    parser.add_argument('-n', '--run-name',
+                        default=datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
+                        help='Name of the run, template used for the restart qsub file.')
+    parser.add_argument('--version', action='version', version='%(prog)s {}'.format(__version__))
+    user_args = vars(parser.parse_args())
+
+    # Set up thread for interrupts
+    char_q, kill_q = Queue(1), Queue(1)
+    thread_pool = ThreadPool(processes=1)
+    thread_pool.apply_async(listen_for_input, args=(char_q, kill_q))
+
+    # Execute main loop, listening for KeyboardInterrupt to
+    # kill the interrupt listening thread
+    try:
+        main(user_args, char_q)
+    except KeyboardInterrupt:
+        kill_q.put(1)
+
+    # Close and join interrupt thread
+    thread_pool.close()
+    thread_pool.join()
