@@ -28,6 +28,8 @@ which will change some aspect about the run:
       ex: 'j45' will change the maximum number of jobs running to 45
     - i<int> will change the check interval to <int>
       ex: 'i45' will change the wait interval to every 45 seconds
+    - s will show the qsub commands for the jobs currently running TODO
+    - p<int> will show the <int> next jobs on the queue TODO
 """
 
 import sys
@@ -329,5 +331,6 @@ if __name__ == '__main__':
         kill_q.put(1)
 
     # Close and join interrupt thread
+    kill_q.put(1)
     thread_pool.close()
     thread_pool.join()
