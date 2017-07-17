@@ -299,14 +299,14 @@ def main(user_args, char_q):
 if __name__ == '__main__':
     # Get arguments from the user
     parser = argparse.ArgumentParser(prog='Torquemon',
-                                     description=('Submits and monitors jobs to the torque job queue ' +
-                                                  'system. Provides for batch jobs to be restarted ' +
+                                     description=('Submits and monitors jobs to the torque job queue '
+                                                  'system. Provides for batch jobs to be restarted '
                                                   'if interrupted mid-run.'))
     parser.add_argument('-q', '--qsub-file', required=True,
-                        help=('File containing qusb commands that will be executed in their entirety when ' +
-                              'there are available job slots. Optionally, a qsub command can be followed by ' +
-                              'a tab character and a folder path where torque log output will be deposited. ' +
-                              'If a run is interrupted before all jobs are completed, the residual restart ' +
+                        help=('File containing qsub commands that will be executed in their entirety when '
+                              'there are available job slots. Optionally, a qsub command can be followed by '
+                              'a tab character and a folder path where torque log output will be deposited. '
+                              'If a run is interrupted before all jobs are completed, the residual restart '
                               'file can be fed directly into torquemon as a qsub file.'))
     parser.add_argument('-j', '--jobs', type=int, default=10,
                         help='Number of jobs to allow to run simultaneously.')
